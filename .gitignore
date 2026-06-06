@@ -1,0 +1,22 @@
+# --- Segredos e Configurações ---
+.streamlit/secrets.toml
+
+# --- Ambientes Virtuais (VENV) ---
+venv/
+env/
+.env/
+
+# --- Cache do Python e Streamlit ---
+__pycache__/
+*.py[cod]
+.streamlit/
+.DS_Store
+
+# --- Ficheiros de IDE (Opcional) ---
+.vscode/
+.idea/
+
+# --- Logs e Bases de Dados Locais ---
+*.log
+*.sqlite3
+db.sqlite3
