@@ -6,6 +6,7 @@ import re
 import numpy as np
 from PIL import Image
 import easyocr
+import cv2  # <--- ADICIONADO PARA O FILTRO
 from supabase import create_client, Client
 
 st.set_page_config(layout="wide")
@@ -47,7 +48,6 @@ st.title("PROFESSOR THIAGO")
 st.subheader("Sistema de Presença Automática")
 st.markdown("---")
 
-# Abas de Captura (Layout Original)
 tab_file, tab_cam = st.tabs(["📁 Ficheiro", "📷 Câmara"])
 foto_documento = None
 
@@ -60,11 +60,14 @@ with tab_cam:
         foto_camera = st.camera_input("Posicione o documento")
         if foto_camera: foto_documento = foto_camera
 
-# Processamento e Status
+# Processamento com melhoria de contraste (Filtro CV2)
 if foto_documento:
     if st.button("🚀 Processar Documento Capturado", type="primary"):
         with st.spinner("🤖 IA a ler..."):
-            img = np.array(Image.open(foto_documento))
+            # FILTRO DE IMAGEM ADICIONADO
+            img_raw = np.array(Image.open(foto_documento).convert('L'))
+            _, img = cv2.threshold(img_raw, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
             res = leitor_ia.readtext(img, detail=0)
             texto = " ".join(res).upper()
             match_d = re.search(r'\b\d{2}/\d{2}/\d{4}\b', texto)
@@ -72,8 +75,9 @@ if foto_documento:
             
             novo_aluno = {
                 "nome": "ALUNO IA", 
-                "nasc": match_d.group(0) if match_d else "NÃO DETETADO", 
-                "sus": match_s.group(0) if match_s else "NÃO DETETADO", 
+                "nasc": match_d.group(0) if match_d else "NÃO DETECTADO", 
+                "sus": match_s.group(0) if match_s else "NÃO DETECTADO", 
+                "rg": "NÃO DETECTADO", # Campo RG para IA
                 "genero": "-", 
                 "prontuario": "GERAR"
             }
@@ -88,16 +92,19 @@ with st.expander("👤 Cadastro Manual de Aluno"):
     with st.form("form_manual", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         nome_m = c1.text_input("Nome")
+        rg_m = c2.text_input("RG") 
         nasc_m = c2.date_input("Nascimento", value=None, min_value=datetime(1900, 1, 1), format="DD/MM/YYYY")
         gen_m = c3.selectbox("Gênero", ["MASCULINO", "FEMININO", "OUTRO"])
         sus_m = c1.text_input("Cartão SUS")
         pront_m = c2.text_input("Prontuário")
         
         if c3.form_submit_button("CADASTRAR"):
-            if nasc_m is None:
-                st.error("Selecione a data de nascimento.")
+            if nasc_m is None: st.error("Selecione a data de nascimento.")
             else:
-                supabase.table("alunos").insert({"nome": nome_m.upper(), "nasc": nasc_m.strftime('%d/%m/%Y'), "sus": sus_m, "genero": gen_m, "prontuario": pront_m}).execute()
+                supabase.table("alunos").insert({
+                    "nome": nome_m.upper(), "rg": rg_m, "nasc": nasc_m.strftime('%d/%m/%Y'), 
+                    "sus": sus_m, "genero": gen_m, "prontuario": pront_m
+                }).execute()
                 st.rerun()
 
 # --- 3. INSERÇÃO DE AULA ---
@@ -111,46 +118,34 @@ with st.expander("✏️ Inserir Nova Aula"):
             supabase.table("aulas").insert({"tema": tema.upper(), "data": data_aula.strftime('%d/%m/%Y'), "qtd": qtd}).execute()
             st.rerun()
 
-# --- 3.5 GERENCIAR AULAS (NOVO BLOCO - EDITAR/EXCLUIR COLUNAS) ---
+# --- 3.5 GERENCIAR AULAS ---
 with st.expander("⚙️ Gerenciar Aulas Criadas (Editar / Excluir)"):
     if aulas_db:
         opcoes_aulas = {f"{a['data']} - {a['tema']}": a for a in aulas_db}
         aula_selecionada = st.selectbox("Selecione a Aula que deseja modificar:", list(opcoes_aulas.keys()))
         aula_dados = opcoes_aulas[aula_selecionada]
-        
         c1, c2, c3 = st.columns(3)
         novo_tema_edit = c1.text_input("Editar Tema", value=aula_dados['tema'], key="tema_edit")
-        
         try: data_obj = datetime.strptime(aula_dados['data'], '%d/%m/%Y')
         except: data_obj = datetime.today()
-        
         nova_data_edit = c2.date_input("Editar Data", value=data_obj, format="DD/MM/YYYY", key="data_edit")
         nova_qtd_edit = c3.number_input("Editar Presentes", value=int(aula_dados.get('qtd', 0)), step=1, key="qtd_edit")
         
-        st.markdown("<br>", unsafe_allow_html=True)
-        col_btn_edit, col_btn_del = st.columns(2)
-        
-        if col_btn_edit.button("💾 Salvar Edição da Aula", width='stretch', type="primary"):
-            supabase.table("aulas").update({
-                "tema": novo_tema_edit.upper(),
-                "data": nova_data_edit.strftime('%d/%m/%Y'),
-                "qtd": nova_qtd_edit
-            }).eq("id", aula_dados['id']).execute()
+        if st.button("💾 Salvar Edição da Aula", type="primary"):
+            supabase.table("aulas").update({"tema": novo_tema_edit.upper(), "data": nova_data_edit.strftime('%d/%m/%Y'), "qtd": nova_qtd_edit}).eq("id", aula_dados['id']).execute()
             st.rerun()
             
-        if col_btn_del.button("❌ Excluir Aula (Apaga a coluna)", width='stretch'):
+        if st.button("❌ Excluir Aula"):
             supabase.table("aulas").delete().eq("id", aula_dados['id']).execute()
             st.rerun()
-    else:
-        st.info("Nenhuma aula cadastrada.")
 
-# --- 4. TABELA DE ALUNOS PRESENTES (INTOCADA) ---
+# --- 4. TABELA DE ALUNOS ---
 st.markdown("### 📋 Tabela de Alunos Presentes")
 
-colunas_principais = ["NOME", "DATA NASCIMENTO", "CARTAO SUS", "GENERO", "PRONTUARIO"]
-
+colunas_principais = ["NOME", "RG", "DATA NASCIMENTO", "CARTAO SUS", "GENERO", "PRONTUARIO"]
 config_colunas = {
     "NOME": st.column_config.TextColumn("NOME"),
+    "RG": st.column_config.TextColumn("RG"),
     "DATA NASCIMENTO": st.column_config.TextColumn("DATA NASCIMENTO"),
     "CARTAO SUS": st.column_config.TextColumn("CARTAO SUS"),
     "GENERO": st.column_config.TextColumn("GENERO"),
@@ -162,8 +157,7 @@ presencas_dict = {(p['id_aluno'], p['id_aula']): p['presente'] for p in presenca
 colunas_aulas_map = []
 
 for i, aula in enumerate(aulas_db):
-    col_nome = f"{aula['data']} | {aula['tema'].upper()} ({aula.get('qtd', 0)} Presentes)"
-    col_nome = col_nome + (" " * i)
+    col_nome = f"{aula['data']} | {aula['tema'].upper()} ({aula.get('qtd', 0)} Presentes)" + (" " * i)
     colunas_principais.append(col_nome)
     colunas_aulas_map.append((aula['id'], col_nome))
     config_colunas[col_nome] = st.column_config.CheckboxColumn(col_nome, default=False)
@@ -173,64 +167,60 @@ linhas_tabela = []
 mapping_linhas_alunos = {}
 
 for i, aluno in enumerate(alunos_db):
-    linha_aluno = [aluno["nome"], aluno["nasc"], aluno["sus"], aluno["genero"], aluno["prontuario"]]
+    linha_aluno = [aluno["nome"], aluno.get("rg", ""), aluno["nasc"], aluno["sus"], aluno["genero"], aluno["prontuario"]]
     mapping_linhas_alunos[i] = aluno["id"]
     for id_aula, col_nome in colunas_aulas_map:
-        estado_presenca = presencas_dict.get((aluno['id'], id_aula), False)
-        linha_aluno.append(estado_presenca)
+        linha_aluno.append(presencas_dict.get((aluno['id'], id_aula), False))
     linha_aluno.append(False) 
     linhas_tabela.append(linha_aluno)
 
 df_edit_display = pd.DataFrame(linhas_tabela, columns=colunas_principais)
-
-for _, col_nome in colunas_aulas_map:
-    df_edit_display[col_nome] = df_edit_display[col_nome].astype(bool)
-
+for col in colunas_principais[6:]: df_edit_display[col] = df_edit_display[col].astype(bool)
 df_edit_display["EXCLUIR"] = df_edit_display["EXCLUIR"].astype(bool)
 
-df_editado = st.data_editor(
-    df_edit_display, 
-    width='stretch', 
-    hide_index=True,
-    column_config=config_colunas
-)
+df_editado = st.data_editor(df_edit_display, width='stretch', hide_index=True, column_config=config_colunas)
 
-if st.button("💾 SALVAR ALTERAÇÕES", width='stretch', type="primary"):
-    with st.spinner("Processando na nuvem..."):
-        upsert_presencas = []
+if st.button("💾 SALVAR TODAS ALTERAÇÕES", type="primary"):
+    with st.spinner("A salvar..."):
         for idx, row in df_editado.iterrows():
-            if idx in mapping_linhas_alunos:
-                id_al = mapping_linhas_alunos[idx]
-                if row["EXCLUIR"]:
-                    supabase.table("alunos").delete().eq("id", id_al).execute()
-                    continue
+            id_al = mapping_linhas_alunos[idx]
+            
+            # A última coluna do df_editado é sempre a de EXCLUIR
+            # row.iloc[-1] pega o último valor da linha, não importa o nome da coluna
+            quer_excluir = row.iloc[-1] 
+            
+            # Removemos NaN convertendo para string vazia ou None
+            def clean(val):
+                if pd.isna(val) or val is None: return ""
+                return str(val)
+
+            if quer_excluir == True: 
+                supabase.table("alunos").delete().eq("id", id_al).execute()
+            else:
                 supabase.table("alunos").update({
-                    "nome": str(row["NOME"]),
-                    "nasc": str(row["DATA NASCIMENTO"]),
-                    "sus": str(row["CARTAO SUS"]),
-                    "genero": str(row["GENERO"]),
-                    "prontuario": str(row["PRONTUARIO"])
+                    "nome": clean(row["NOME"]),
+                    "rg": clean(row["RG"]),
+                    "nasc": clean(row["DATA NASCIMENTO"]),
+                    "sus": clean(row["CARTAO SUS"]),
+                    "genero": clean(row["GENERO"]),
+                    "prontuario": clean(row["PRONTUARIO"])
                 }).eq("id", id_al).execute()
+                
+                # Salva presenças (excluímos a última coluna da contagem)
                 for id_aula, col_nome in colunas_aulas_map:
-                    upsert_presencas.append({
-                        "id_aluno": id_al,
-                        "id_aula": id_aula,
-                        "presente": bool(row[col_nome])
-                    })
-        if upsert_presencas:
-            supabase.table("presencas").upsert(upsert_presencas).execute()
-        st.toast("✅ Base de dados atualizada com sucesso!")
+                    val_check = row[col_nome]
+                    supabase.table("presencas").upsert({
+                        "id_aluno": id_al, 
+                        "id_aula": id_aula, 
+                        "presente": bool(val_check) if not pd.isna(val_check) else False
+                    }).execute()
+        st.toast("✅ Base de dados atualizada!")
         st.rerun()
 
-st.markdown("---")
-
 # --- 5. EXPORTAÇÃO ---
-col_vazia, col_exportar = st.columns([4, 1])
-with col_exportar:
+with st.expander("📥 Exportar Dados"):
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer: 
         df_export = df_editado.drop(columns=["EXCLUIR"])
-        for _, col_nome in colunas_aulas_map:
-            df_export[col_nome] = df_export[col_nome].apply(lambda x: "Presente" if x else "")
         df_export.to_excel(writer, index=False, sheet_name='Presencas')
-    st.download_button("GERAR EXCEL", data=buffer.getvalue(), file_name="Presencas.xlsx", mime="application/vnd.ms-excel", width='stretch')
+    st.download_button("BAIXAR EXCEL", data=buffer.getvalue(), file_name="Presencas.xlsx", mime="application/vnd.ms-excel")
