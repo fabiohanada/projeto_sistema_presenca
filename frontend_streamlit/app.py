@@ -48,7 +48,7 @@ st.title("PROFESSOR THIAGO")
 st.subheader("Sistema de Presença Automática")
 st.markdown("---")
 
-tab_file, tab_cam = st.tabs(["📁 Ficheiro", "📷 Câmara"])
+tab_file, tab_cam = st.tabs(["📁 Ficheiro", "📷 Câmera"])
 foto_documento = None
 
 with tab_file:
@@ -60,30 +60,68 @@ with tab_cam:
         foto_camera = st.camera_input("Posicione o documento")
         if foto_camera: foto_documento = foto_camera
 
-# Processamento com melhoria de contraste (Filtro CV2)
+# --- NO SEU BLOCO DE PROCESSAMENTO ---
 if foto_documento:
-    if st.button("🚀 Processar Documento Capturado", type="primary"):
-        with st.spinner("🤖 IA a ler..."):
-            # FILTRO DE IMAGEM ADICIONADO
-            img_raw = np.array(Image.open(foto_documento).convert('L'))
-            _, img = cv2.threshold(img_raw, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if st.button("🚀 Processar com Recorte Inteligente (ROI)"):
+        with st.spinner("Analisando zonas do cartão..."):
+            # Converte a imagem para o formato que o OpenCV entende
+            img = np.array(Image.open(foto_documento).convert('RGB'))
             
-            res = leitor_ia.readtext(img, detail=0)
-            texto = " ".join(res).upper()
-            match_d = re.search(r'\b\d{2}/\d{2}/\d{4}\b', texto)
-            match_s = re.search(r'\b\d{15}\b', texto.replace(" ", ""))
+            # Altura e Largura da imagem
+            h, w, _ = img.shape
             
-            novo_aluno = {
-                "nome": "ALUNO IA", 
-                "nasc": match_d.group(0) if match_d else "NÃO DETECTADO", 
-                "sus": match_s.group(0) if match_s else "NÃO DETECTADO", 
-                "rg": "NÃO DETECTADO", # Campo RG para IA
-                "genero": "-", 
-                "prontuario": "GERAR"
-            }
-            supabase.table("alunos").insert(novo_aluno).execute()
-            st.success("✅ Aluno processado com sucesso!")
-            st.rerun()
+            # --- DEFINIÇÃO DAS ZONAS (ROI) ---
+            # [y_inicial:y_final, x_inicial:x_final]
+            # Estas coordenadas foram estimadas para um cartão SUS padrão
+            roi_nome = img[int(h*0.20):int(h*0.45), int(w*0.05):int(w*0.95)] # Topo (Nome)
+            roi_sus  = img[int(h*0.65):int(h*0.85), int(w*0.10):int(w*0.90)] # Base (SUS)
+            
+            # Função para ler cada zona
+            def extrair_texto(crop):
+                # O EasyOCR lê melhor imagens em escala de cinza
+                gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+                # O parâmetro 'contrast_ths' ajuda em fotos com pouca luz
+                res = leitor_ia.readtext(gray, detail=0, contrast_ths=0.2)
+                return " ".join(res).strip()
+
+            # Processamento
+            nome_detectado = extrair_texto(roi_nome)
+            sus_detectado = extrair_texto(roi_sus)
+            
+            # --- FEEDBACK VISUAL ---
+            # Isto é CRUCIAL: se os cortes saírem vazios, ajusta os valores 'h*' acima
+            st.write("### Conferência dos Recortes:")
+            st.image([roi_nome, roi_sus], caption=["Corte Nome", "Corte SUS"])
+            
+            # Exibe o resultado
+            st.success(f"**Nome:** {nome_detectado}")
+            st.success(f"**SUS:** {sus_detectado}")
+            
+            if st.button("💾 Confirmar e Salvar Dados"):
+                # 1. Preparar os dados
+                dados_para_inserir = {
+                    "nome": nome_detectado.strip(),
+                    "sus": sus_detectado.strip(),
+                    "nasc": "01/01/2000", # Placeholder
+                    "rg": "NÃO DETECTADO",
+                    "genero": "-",
+                    "prontuario": "GERAR"
+                }
+                
+                # 2. Tentar inserir com verificação de erro
+                try:
+                    # Tenta a inserção e guarda a resposta
+                    response = supabase.table("alunos").insert(dados_para_inserir).execute()
+                    
+                    # Se chegarmos aqui sem erro, funcionou
+                    st.success("✅ Aluno inserido com sucesso na base de dados!")
+                    st.balloons()
+                    
+                except Exception as e:
+                    # Se der erro, vamos mostrar exatamente qual é o erro
+                    st.error("❌ ERRO AO INSERIR NO SUPABASE:")
+                    st.code(e)
+                    st.warning("Dica: Verifique se o nome da tabela no Supabase é exatamente 'alunos' (tudo minúsculo).")
 else:
     st.info("A aguardar captura...")
 
